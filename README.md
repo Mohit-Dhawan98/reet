@@ -1,239 +1,141 @@
 # REET: Relevance-Engineered Efficient Tokens
 
-> **The only learned compression that doesn't break in multi-turn conversations.**
+**Entity-level semantic compression for LLM context windows**
 
-While LLMLingua-2 and SnapKV lose 50%+ performance by turn 10, REET maintains >90%.
+## Overview
 
----
+REET is a research project exploring a novel approach to context compression: **entity-level semantic extraction** rather than token or sentence-level filtering.
 
-## The Problem
+### The Problem
 
-Every compression method works great on single queries. But production AI agents have **conversations**:
+Current context compression methods operate at:
+- **Token level** (LLMLingua-2, LongLLMLingua, QUITO-X) - Drop individual tokens
+- **Sentence level** (EXIT, RECOMP) - Select/remove sentences
 
-| Method | Turn 1 | Turn 10 | Degradation |
-|--------|--------|---------|-------------|
-| LLMLingua-2 | 92% | 43% | **-53%** |
-| SnapKV | 95% | 48% | **-49%** |
-| **REET** | 95% | >90% | **<5%** |
+None operate at the **semantic/entity level** - understanding *what matters* rather than *what words to keep*.
 
-*Source: SCBench (arXiv:2412.10319)*
-
-Why? Existing methods are trained on single documents. They have no concept of:
-- What was important in previous turns
-- Which entities were referenced before
-- How information connects across a conversation
-
----
-
-## REET's Approach
-
-Train compression models on **conversations**, not documents:
+### Our Approach
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                    REET Multi-Turn Pipeline                  │
-├─────────────────────────────────────────────────────────────┤
-│  1. Turn-Aware Token Scorer (<30ms)                         │
-│     Importance compounds over turns—referenced tokens stay  │
-├─────────────────────────────────────────────────────────────┤
-│  2. Entity-Preserving Compressor (<50ms)                    │
-│     Custom loss penalizes entity loss across turns          │
-├─────────────────────────────────────────────────────────────┤
-│  3. Entity Registry                                         │
-│     Track what's been mentioned, boost when re-referenced   │
-└─────────────────────────────────────────────────────────────┘
+Traditional:  "John Smith, CEO of Acme Corp founded in 1985"
+              → "John Smith CEO Acme Corp 1985" (token drops)
+
+REET:         "John Smith, CEO of Acme Corp founded in 1985"
+              → {"Acme Corp": ["founded 1985", "CEO: John Smith"]} (entity-facts)
 ```
 
----
+REET extracts entities and their associated facts, producing a structured representation that:
+1. Preserves semantic relationships
+2. Enables better compression ratios
+3. Supports both task-agnostic and query-aware modes
 
-## Quick Example
+## Features
 
-```python
-from reet import REET
+### Two Operating Modes
 
-# Load pre-trained models
-compressor = REET.from_pretrained("reet-base")
+| Mode | Input | Output | Use Case |
+|------|-------|--------|----------|
+| **Task-Agnostic** | Context only | All important entities + facts | General summarization |
+| **Query-Aware** | Context + Query | Relevant entities + facts | QA, retrieval |
 
-# Compress with multi-turn awareness
-result = compressor.compress(
-    context=conversation_history,
-    query=current_question,
-    turn_history=previous_turns,  # Key: maintains state across calls
-    target_ratio=0.5
-)
+### Baselines Included
 
-# Use with any LLM
-response = llm.chat(result.messages)
-
-print(result.report)
-# → Compression: 50% | Entities preserved: 12/12 | Turn degradation: <2%
-```
-
-### Multi-Turn Conversation
-
-```python
-# REET maintains context across turns
-session = compressor.create_session()
-
-for turn in conversation:
-    compressed = session.compress(
-        context=turn.context,
-        query=turn.query
-    )
-    response = llm.chat(compressed)
-    session.add_response(response)
-
-# Even at turn 10, accuracy stays >90%
-print(session.metrics)
-# → Turn 1: 95% | Turn 5: 93% | Turn 10: 91%
-```
-
----
-
-## Benchmark Results
-
-### Multi-Turn Robustness (SCBench) — PRIMARY METRIC
-
-| Method | Turn 1 | Turn 5 | Turn 10 | Degradation |
-|--------|--------|--------|---------|-------------|
-| LLMLingua-2 | 92% | 68% | 43% | -53% |
-| SnapKV | 95% | 72% | 48% | -49% |
-| **REET** | **95%** | **93%** | **91%** | **-4%** |
-
-### Single-Turn Compression (LongBench)
-
-| Method | 50% Compression | 30% Compression | Latency |
-|--------|-----------------|-----------------|---------|
-| LLMLingua-2 | 95% | 89% | 100ms |
-| RECOMP | 93% | 86% | 500ms |
-| **REET** | **95%** | **91%** | **<50ms** |
-
-### Entity Preservation (HotpotQA)
-
-| Method | EM Loss at 6% | Entity Retention |
-|--------|---------------|------------------|
-| RECOMP | -3 EM | ~85% |
-| LLMLingua-2 | -2 EM | ~80% |
-| **REET** | **-1 EM** | **>98%** |
-
----
-
-## Why Multi-Turn Matters
-
-Production agents aren't single-query systems:
-
-| Use Case | Typical Turns |
-|----------|---------------|
-| Coding assistants | 10-50 |
-| Customer support | 5-20 |
-| Research agents | 20-100 |
-| Autonomous agents | 100+ |
-
-A 50% performance drop at turn 10 means your agent breaks exactly when it matters most—during complex, multi-step tasks.
-
----
+- Truncation (naive baseline)
+- LLMLingua-2 (token classification)
+- LongLLMLingua (contrastive perplexity)
+- GLiNER2 baseline (entity extraction with generic schema)
 
 ## Installation
 
 ```bash
-pip install reet
+# Clone the repository
+git clone https://github.com/yourusername/reet.git
+cd reet
+
+# Install dependencies
+pip install -e .
+
+# Optional: Install LLMLingua for baseline comparisons
+pip install llmlingua
 ```
 
-### From Source
+## Quick Start
+
+```python
+from reet.benchmarks.baselines import CompressorRegistry
+
+# Get a compressor
+compressor = CompressorRegistry.get("truncation")
+
+# Compress context
+result = compressor.compress(
+    context="Your long context here...",
+    query="Optional query for query-aware compression",
+    target_ratio=0.5  # Keep 50% of tokens
+)
+
+print(f"Compressed: {result.compressed_text}")
+print(f"Ratio: {result.compression_ratio:.2%}")
+```
+
+## Project Structure
+
+```
+reet/
+├── benchmarks/
+│   ├── baselines/       # Compression baselines
+│   │   ├── base.py      # BaseCompressor, CompressorRegistry
+│   │   ├── truncation.py
+│   │   └── llmlingua.py
+│   └── scbench/         # SCBench evaluation
+├── data/                # Dataset loaders (planned)
+└── models/              # REET-Extractor (planned)
+
+scripts/
+└── run_scbench.py       # Benchmark runner
+
+docs/
+└── RESEARCH_NOTES.md    # Detailed research findings
+```
+
+## Benchmarks
+
+### Datasets
+
+| Phase | Dataset | Type |
+|-------|---------|------|
+| 1 | NaturalQuestions, TriviaQA, HotpotQA, SQuAD | Single-turn QA |
+| 2 | LongBench, ZeroSCROLLS | Task-agnostic |
+| 3 | SCBench, CoQA | Multi-turn |
+
+### Running Evaluations
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/reet
-cd reet
-pip install -e ".[dev]"
+# Quick test
+python scripts/run_scbench.py --quick
+
+# Full evaluation
+python scripts/run_scbench.py --dataset scbench_kv --limit 50 --compressors truncation
 ```
 
----
+## Research Status
 
-## Research Roadmap
-
-| Phase | Goal | Status |
-|-------|------|--------|
-| **Phase 1** | Baselines + SCBench evaluation | 🔄 In Progress |
-| **Phase 2** | Turn-aware token scorer | ⏳ Planned |
-| **Phase 3** | Entity-preserving compressor | ⏳ Planned |
-| **Phase 4** | Full pipeline + benchmarks | ⏳ Planned |
-| **Phase 5** | Release + publication | ⏳ Planned |
-
-**Primary Metric**: SCBench Turn-10 retention (target: >90%)
-
-See [ROADMAP.md](./ROADMAP.md) for detailed milestones.
-
----
-
-## Documentation
-
-| Document | Description |
-|----------|-------------|
-| [VISION.md](./VISION.md) | Problem statement, research contributions |
-| [ARCHITECTURE.md](./ARCHITECTURE.md) | Model architecture, training pipeline |
-| [BENCHMARKS.md](./BENCHMARKS.md) | Evaluation strategy, baseline comparisons |
-| [ROADMAP.md](./ROADMAP.md) | Research phases, success criteria |
-
----
-
-## Key Innovations
-
-### 1. Turn-Aware Token Scoring
-
-Traditional: Score tokens independently each turn.
-REET: Importance compounds—tokens referenced in answers stay important.
-
-### 2. Entity Persistence Loss
-
-Traditional: Hope entities survive compression.
-REET: Explicit loss function penalizing entity loss, especially for entities referenced across turns.
-
-### 3. Reference Tracking
-
-Traditional: "The function from before" means nothing.
-REET: Parse references, link to source tokens, boost importance.
-
----
-
-## Baselines
-
-REET competes with prompt compression methods:
-
-| Method | Type | Multi-Turn | Speed |
-|--------|------|------------|-------|
-| **LLMLingua-2** | Token selection | ❌ 43% at T10 | 100ms |
-| **LongLLMLingua** | Question-aware | ❌ Similar | 100ms |
-| **RECOMP** | Extract + Abstract | ❌ ~45% at T10 | 500ms |
-| **Selective Context** | Attention-based | ❌ Worse | 200ms |
-
-KV cache methods (DynamicKV, SnapKV) are complementary—they work at inference time, not context preparation.
-
----
-
-## Contributing
-
-This is a research project in active development. We welcome:
-
-- **Benchmark implementations** (especially SCBench integration)
-- **Training data contributions** (conversation datasets)
-- **Model experiments** (different base models, loss functions)
-
----
+This is an active research project. See:
+- [VISION.md](VISION.md) - Problem statement and goals
+- [ARCHITECTURE.md](ARCHITECTURE.md) - Technical design
+- [BENCHMARKS.md](BENCHMARKS.md) - Baselines and datasets
+- [ROADMAP.md](ROADMAP.md) - Development phases
+- [docs/RESEARCH_NOTES.md](docs/RESEARCH_NOTES.md) - Detailed research findings
 
 ## References
 
 ### Key Papers
-- [LLMLingua-2](https://aclanthology.org/2024.acl-long.91.pdf) — Primary baseline (ACL 2024)
-- [SCBench](https://arxiv.org/abs/2412.10319) — Multi-turn benchmark
-- [RECOMP](https://arxiv.org/abs/2310.04408) — Extractive/abstractive compression (ICLR 2024)
-- [DynamicKV](https://arxiv.org/abs/2412.14838) — Shows extreme compression is possible
 
-### Benchmarks
-- [SCBench](https://github.com/microsoft/SCBench) — Multi-turn compression benchmark
-- [LongBench](https://github.com/THUDM/LongBench) — Long-context understanding
-- [NoLiMa](https://github.com/adobe-research/NoLiMa) — Semantic retrieval (ICML 2025)
-
----
+- [LLMLingua-2](https://arxiv.org/abs/2403.12968) - Task-agnostic token compression
+- [LongLLMLingua](https://arxiv.org/abs/2310.06839) - Query-aware compression
+- [QUITO-X](https://arxiv.org/abs/2408.10497) - Current SOTA on QA tasks
+- [EXIT](https://arxiv.org/abs/2412.12559) - Entity-preserving sentence selection
+- [GLiNER2](https://arxiv.org/abs/2507.18546) - Schema-driven entity extraction
 
 ## License
 
